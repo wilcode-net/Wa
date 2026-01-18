@@ -1,0 +1,45 @@
+name: Auto update
+
+on:
+  schedule:
+    - cron: "*/30 * * * *" # mỗi 30 phút
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Get latest release info
+        id: release
+        run: |
+          curl -s https://api.github.com/repos/wppconnect-team/wa-js/releases/latest > release.json
+          echo "tag=$(jq -r .tag_name release.json)" >> $GITHUB_OUTPUT
+
+      - name: Download latest wa.js
+        run: |
+          curl -L \
+            https://github.com/wppconnect-team/wa-js/releases/latest/download/wppconnect-wa.js \
+            -o wa.new.js
+
+      - name: Compare with wa.txt
+        run: |
+          if [ -f wa.txt ] && cmp -s wa.new.js wa.txt; then
+            echo "No change detected"
+            exit 0
+          fi
+
+      - name: Update wa.txt
+        run: |
+          mv wa.new.js wa.txt
+
+      - name: Commit & push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add wa.txt
+          git commit -m "Update wa.txt to wa-js ${{ steps.release.outputs.tag }}"
+          git push
