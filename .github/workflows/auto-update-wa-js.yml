@@ -1,4 +1,4 @@
-name: Auto update wa.txt from wa-js release (stable + prerelease)
+name: Auto update wa.txt from wa-js release (stable + prerelease + nightly)
 
 on:
   schedule:
@@ -18,21 +18,21 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y jq
 
-      - name: Pick newest release (include prerelease, exclude draft)
+      - name: Pick newest release (include prerelease, exclude draft, handle fixed nightly tag)
         run: |
           set -e
 
           curl -s https://api.github.com/repos/wppconnect-team/wa-js/releases?per_page=50 > releases.json
 
-          # Pick newest release by published_at, ignoring drafts
+          # Pick newest by updated_at first (nightly tag is fixed so published_at can be old)
           jq -r '
             map(select(.draft == false))
-            | sort_by(.published_at // .created_at)
+            | sort_by(.updated_at // .created_at // .published_at)
             | last
           ' releases.json > picked.json
 
           TAG=$(jq -r '.tag_name' picked.json)
-          DATE=$(jq -r '.published_at // .created_at' picked.json)
+          DATE=$(jq -r '.updated_at // .created_at // .published_at' picked.json)
 
           URL=$(jq -r '
             .assets[]
@@ -40,9 +40,9 @@ jobs:
             | .browser_download_url
           ' picked.json)
 
-          echo "Picked release: $TAG ($DATE)"
-          echo "$TAG" > .latest_tag
-          echo "$URL" > .download_url
+          echo "Picked: $TAG"
+          echo "Date  : $DATE"
+          echo "URL   : $URL"
 
           if [ -z "$URL" ] || [ "$URL" = "null" ]; then
             echo "ERROR: Asset wppconnect-wa.js not found in picked release!"
@@ -50,6 +50,10 @@ jobs:
             jq -r '.assets[].name' picked.json
             exit 1
           fi
+
+          echo "$TAG" > .latest_tag
+          echo "$DATE" > .latest_date
+          echo "$URL" > .download_url
 
       - name: Download wa.js
         run: |
@@ -74,10 +78,11 @@ jobs:
           fi
 
           TAG=$(cat .latest_tag)
+          DATE=$(cat .latest_date)
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add wa.txt
-          git commit -m "Auto Update ${TAG}"
+          git commit -m "Auto Update ${TAG} (${DATE})"
           git push
