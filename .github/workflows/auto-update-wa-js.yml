@@ -1,4 +1,4 @@
-name: Auto update wa.txt from wa-js release
+name: Auto update wa.txt from wa-js release (stable + nightly)
 
 on:
   schedule:
@@ -13,16 +13,63 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Get latest release info
+      - name: Install deps
         run: |
-          curl -s https://api.github.com/repos/wppconnect-team/wa-js/releases/latest \
-            | jq -r '.tag_name' > .latest_tag
+          sudo apt-get update -y
+          sudo apt-get install -y jq
 
-      - name: Download latest wa.js
+      - name: Get latest stable + nightly release info (pick newest)
         run: |
-          curl -L \
-            https://github.com/wppconnect-team/wa-js/releases/latest/download/wppconnect-wa.js \
-            -o wa.new.js
+          set -e
+
+          # Latest stable
+          curl -s https://api.github.com/repos/wppconnect-team/wa-js/releases/latest > stable.json
+
+          # Latest nightly (find newest tag contains "nightly")
+          curl -s https://api.github.com/repos/wppconnect-team/wa-js/releases?per_page=50 > releases.json
+
+          jq -r '
+            map(select(.tag_name | test("nightly"; "i")))
+            | sort_by(.published_at // .created_at)
+            | last
+          ' releases.json > nightly.json
+
+          STABLE_TAG=$(jq -r '.tag_name' stable.json)
+          STABLE_DATE=$(jq -r '.published_at // .created_at' stable.json)
+
+          NIGHTLY_TAG=$(jq -r '.tag_name // empty' nightly.json)
+          NIGHTLY_DATE=$(jq -r '.published_at // .created_at // empty' nightly.json)
+
+          echo "Stable : $STABLE_TAG ($STABLE_DATE)"
+          echo "Nightly: $NIGHTLY_TAG ($NIGHTLY_DATE)"
+
+          # Choose newest between stable vs nightly
+          PICKED_JSON="stable.json"
+          if [ -n "$NIGHTLY_TAG" ] && [ "$NIGHTLY_DATE" \> "$STABLE_DATE" ]; then
+            PICKED_JSON="nightly.json"
+          fi
+
+          TAG=$(jq -r '.tag_name' "$PICKED_JSON")
+          URL=$(jq -r '
+            .assets[]
+            | select(.name=="wppconnect-wa.js")
+            | .browser_download_url
+          ' "$PICKED_JSON")
+
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "ERROR: Cannot find asset wppconnect-wa.js in chosen release."
+            exit 1
+          fi
+
+          echo "$TAG" > .latest_tag
+          echo "$URL" > .download_url
+
+      - name: Download chosen wa.js
+        run: |
+          set -e
+          URL=$(cat .download_url)
+          echo "Downloading: $URL"
+          curl -L "$URL" -o wa.new.js
 
       - name: Update wa.txt if changed
         run: |
@@ -40,8 +87,10 @@ jobs:
           fi
 
           TAG=$(cat .latest_tag)
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git add wa.txt
           git commit -m "Auto Update ${TAG}"
           git push
