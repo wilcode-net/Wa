@@ -1,4 +1,4 @@
-name: Auto update wa.txt from wa-js (release vs nightly, by asset time)
+name: Auto update wa.txt from wa-js (release vs nightly, hash compare)
 
 on:
   schedule:
@@ -25,7 +25,6 @@ jobs:
           REPO="wppconnect-team/wa-js"
           ASSET_NAME="wppconnect-wa.js"
 
-          # 1) Latest release/prerelease (exclude drafts)
           curl -s -H "Cache-Control: no-cache" \
             "https://api.github.com/repos/${REPO}/releases?per_page=50" \
             > releases.json
@@ -36,12 +35,10 @@ jobs:
             | last
           ' releases.json > newest_release.json
 
-          # 2) Nightly release (fixed tag)
           curl -s -H "Cache-Control: no-cache" \
             "https://api.github.com/repos/${REPO}/releases/tags/nightly" \
             > nightly.json
 
-          # Helper: extract asset updated_at + url
           get_asset_date() {
             jq -r --arg NAME "$ASSET_NAME" '
               .assets[]
@@ -67,7 +64,6 @@ jobs:
           echo "Release asset date : $RELEASE_ASSET_DATE"
           echo "Nightly asset date : $NIGHTLY_ASSET_DATE"
 
-          # Validate asset exists in both (or fallback)
           if [ -z "$RELEASE_URL" ] || [ "$RELEASE_URL" = "null" ]; then
             echo "WARN: Release asset not found, forcing nightly"
             cp nightly.json picked.json
@@ -75,12 +71,11 @@ jobs:
             echo "WARN: Nightly asset not found, forcing release"
             cp newest_release.json picked.json
           else
-            # Compare ISO8601 strings directly
             if [ "$NIGHTLY_ASSET_DATE" \> "$RELEASE_ASSET_DATE" ]; then
-              echo "✅ Pick nightly (asset newer)"
+              echo "✅ Pick nightly"
               cp nightly.json picked.json
             else
-              echo "✅ Pick release (asset newer or equal)"
+              echo "✅ Pick newest release"
               cp newest_release.json picked.json
             fi
           fi
@@ -122,22 +117,39 @@ jobs:
           set -e
           URL=$(cat .download_url)
 
-          # Cache bust (GitHub releases CDN đôi khi giữ lại)
+          # cache-bust
           URL="$URL?ts=$(date +%s)"
 
           echo "Downloading: $URL"
-          curl -L -H "Cache-Control: no-cache" "$URL" -o wa.new.js
+          curl -fL -H "Cache-Control: no-cache" "$URL" -o wa.new.js
 
-      - name: Update wa.txt if changed
+      - name: Compare hash and update wa.txt if changed
         run: |
-          if [ -f wa.txt ] && cmp -s wa.new.js wa.txt; then
-            echo "No changes detected. Skip update."
+          set -e
+
+          if [ -f wa.txt ]; then
+            OLD_HASH=$(sha256sum wa.txt | awk '{print $1}')
+          else
+            OLD_HASH="(missing)"
+          fi
+
+          NEW_HASH=$(sha256sum wa.new.js | awk '{print $1}')
+
+          echo "Old hash: $OLD_HASH"
+          echo "New hash: $NEW_HASH"
+
+          if [ "$OLD_HASH" = "$NEW_HASH" ]; then
+            echo "No changes detected (same sha256). Skip update."
             exit 0
           fi
+
           mv wa.new.js wa.txt
+          echo "✅ Updated wa.txt"
 
       - name: Commit & push if needed
         run: |
+          set -e
+
           if git diff --quiet; then
             echo "Nothing to commit."
             exit 0
