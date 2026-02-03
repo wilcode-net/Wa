@@ -1,4 +1,4 @@
-name: Auto update wa.txt from wa-js release (stable + prerelease + nightly)
+name: Auto update wa.txt from wa-js (release vs nightly)
 
 on:
   schedule:
@@ -18,18 +18,42 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y jq
 
-      - name: Pick newest release (include prerelease, exclude draft, handle fixed nightly tag)
+      - name: Pick newest between latest release and nightly (by updated_at)
         run: |
           set -e
 
-          curl -s https://api.github.com/repos/wppconnect-team/wa-js/releases?per_page=50 > releases.json
+          # 1) Fetch latest releases list (includes prerelease, excludes drafts)
+          curl -s -H "Cache-Control: no-cache" \
+            "https://api.github.com/repos/wppconnect-team/wa-js/releases?per_page=50" \
+            > releases.json
 
-          # Pick newest by updated_at first (nightly tag is fixed so published_at can be old)
           jq -r '
             map(select(.draft == false))
             | sort_by(.updated_at // .created_at // .published_at)
             | last
-          ' releases.json > picked.json
+          ' releases.json > newest_release.json
+
+
+          # 2) Fetch nightly release (fixed tag, but updated_at changes)
+          curl -s -H "Cache-Control: no-cache" \
+            "https://api.github.com/repos/wppconnect-team/wa-js/releases/tags/nightly" \
+            > nightly.json
+
+
+          # 3) Compare timestamps
+          RELEASE_DATE=$(jq -r '.updated_at // .created_at // .published_at' newest_release.json)
+          NIGHTLY_DATE=$(jq -r '.updated_at // .created_at // .published_at' nightly.json)
+
+          echo "Newest release date: $RELEASE_DATE"
+          echo "Nightly date       : $NIGHTLY_DATE"
+
+          if [ "$NIGHTLY_DATE" \> "$RELEASE_DATE" ]; then
+            echo "✅ Pick nightly"
+            cp nightly.json picked.json
+          else
+            echo "✅ Pick newest release"
+            cp newest_release.json picked.json
+          fi
 
           TAG=$(jq -r '.tag_name' picked.json)
           DATE=$(jq -r '.updated_at // .created_at // .published_at' picked.json)
@@ -59,8 +83,12 @@ jobs:
         run: |
           set -e
           URL=$(cat .download_url)
+
+          # bust cache just in case
+          URL="$URL?ts=$(date +%s)"
+
           echo "Downloading: $URL"
-          curl -L "$URL" -o wa.new.js
+          curl -L -H "Cache-Control: no-cache" "$URL" -o wa.new.js
 
       - name: Update wa.txt if changed
         run: |
